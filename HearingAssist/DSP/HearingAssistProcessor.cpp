@@ -13,31 +13,64 @@ juce::AudioProcessorValueTreeState::ParameterLayout HearingAssistProcessor::crea
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    // 6 Sliders for Left Ear (0-100 dB HL)
+    // 6 Sliders for Left Ear (0 - 100 dB HL)
     for (int i = 0; i < 6; ++i)
     {
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID("L_GAIN" + std::to_string(i), 1),
-            "Left " + std::to_string(i),
+            "Left Ear " + std::to_string(i),
             juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f),
             0.0f));
     }
 
-    // 6 Sliders for Right Ear (0-100 dB HL)
+    // 6 Sliders for Right Ear (0 - 100 dB HL)
     for (int i = 0; i < 6; ++i)
     {
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID("R_GAIN" + std::to_string(i), 1),
-            "Right " + std::to_string(i),
+            "Right Ear " + std::to_string(i),
             juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f),
             0.0f));
     }
 
-    // Simulation Mode Toggle
-    params.push_back(std::make_unique<juce::AudioParameterBool>(
-        juce::ParameterID("SIM_MODE", 1),
-        "Simulation Mode",
-        false));
+    // 3-Way Audition Mode: 0 = Bypass, 1 = Simulation, 2 = Amplification
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("AUDITION_MODE", 1),
+        "Audition Mode",
+        juce::StringArray{ "Bypass", "Simulation", "Personalized Amplification" },
+        2));
+
+    // Prescription Formula: 0 = NAL-R, 1 = NAL-NL2, 2 = HalfGain, 3 = POGO
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID("FORMULA", 1),
+        "Prescription Formula",
+        juce::StringArray{ "NAL-R", "NAL-NL2", "HalfGain", "POGO" },
+        0));
+
+    // Fine-Tuning Trims & Safety Controls
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("MASTER_GAIN", 1),
+        "Master Gain",
+        juce::NormalisableRange<float>(-12.0f, 12.0f, 0.5f),
+        0.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("BASS_TRIM", 1),
+        "Bass Trim",
+        juce::NormalisableRange<float>(-10.0f, 10.0f, 0.5f),
+        0.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("TREBLE_TRIM", 1),
+        "Treble Trim",
+        juce::NormalisableRange<float>(-10.0f, 10.0f, 0.5f),
+        0.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("LIMITER_CEILING", 1),
+        "Limiter Ceiling",
+        juce::NormalisableRange<float>(-18.0f, -0.5f, 0.5f),
+        -1.0f));
 
     return { params.begin(), params.end() };
 }
@@ -56,43 +89,63 @@ void HearingAssistProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // Clear extra channels
+    // Clear unused output channels
     for (int i = getTotalNumInputChannels(); i < getTotalNumOutputChannels(); ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    // 1. Read parameters from UI safely via atomic pointers
-    bool simMode = apvts.getRawParameterValue("SIM_MODE")->load() > 0.5f;
-    std::array<float, 6> leftThresholds{};
-    std::array<float, 6> rightThresholds{};
+    // 1. Read APVTS parameters atomically
+    int auditionModeIdx = static_cast<int>(apvts.getRawParameterValue("AUDITION_MODE")->load());
+    int formulaIdx = static_cast<int>(apvts.getRawParameterValue("FORMULA")->load());
 
-    for (int i = 0; i < 6; ++i)
+    float masterGain = apvts.getRawParameterValue("MASTER_GAIN")->load();
+    float bassTrim = apvts.getRawParameterValue("BASS_TRIM")->load();
+    float trebleTrim = apvts.getRawParameterValue("TREBLE_TRIM")->load();
+    float limiterCeiling = apvts.getRawParameterValue("LIMITER_CEILING")->load();
+
+    const auto& freqs = HearingAssist::ThresholdData::getStandardFrequencies();
+    for (size_t i = 0; i < 6; ++i)
     {
-        leftThresholds[i] = apvts.getRawParameterValue("L_GAIN" + std::to_string(i))->load();
-        rightThresholds[i] = apvts.getRawParameterValue("R_GAIN" + std::to_string(i))->load();
+        float lLoss = apvts.getRawParameterValue("L_GAIN" + std::to_string(i))->load();
+        float rLoss = apvts.getRawParameterValue("R_GAIN" + std::to_string(i))->load();
+        currentAudiogram.setAirThreshold(HearingAssist::Ear::Left, freqs[i], lLoss);
+        currentAudiogram.setAirThreshold(HearingAssist::Ear::Right, freqs[i], rLoss);
     }
 
-    // 2. Calculate Gains (Half-gain rule or Simulation inversion)
-    std::array<float, 6> targetLeftGains = GainCalculator::calculateGains(leftThresholds, simMode);
-    std::array<float, 6> targetRightGains = GainCalculator::calculateGains(rightThresholds, simMode);
+    // 2. Set DSP processing mode
+    dspEngine.setMode(static_cast<HearingAssist::ProcessingMode>(auditionModeIdx));
+    dspEngine.setLimiterCeiling(limiterCeiling);
 
-    // 3. Check if coefficients need updating (only if values changed)
-    bool needsUpdate = (simMode != lastSimState);
+    // 3. Compute fitting target gains using selected formula
+    bool isSim = (auditionModeIdx == 1);
+    auto prescriptionFormula = static_cast<HearingAssist::PrescriptionFormula>(formulaIdx);
+    auto targets = HearingAssist::FittingAlgorithms::calculateTargets(
+        currentAudiogram, prescriptionFormula, isSim, masterGain, bassTrim, trebleTrim);
+
+    // 4. Update coefficients if parameters changed
+    bool needsUpdate = (auditionModeIdx != lastAuditionMode || formulaIdx != lastFormula ||
+                        std::abs(masterGain - lastMasterGain) > 0.05f ||
+                        std::abs(bassTrim - lastBassTrim) > 0.05f ||
+                        std::abs(trebleTrim - lastTrebleTrim) > 0.05f);
 
     for (int i = 0; i < 6; ++i)
     {
-        if (std::abs(targetLeftGains[i] - lastLeftGains[i]) > 0.1f) needsUpdate = true;
-        if (std::abs(targetRightGains[i] - lastRightGains[i]) > 0.1f) needsUpdate = true;
+        if (std::abs(targets.leftGainsDb[i] - lastLeftGains[i]) > 0.1f) needsUpdate = true;
+        if (std::abs(targets.rightGainsDb[i] - lastRightGains[i]) > 0.1f) needsUpdate = true;
     }
 
     if (needsUpdate)
     {
-        dspEngine.updateProfile(targetLeftGains, targetRightGains);
-        lastLeftGains = targetLeftGains;
-        lastRightGains = targetRightGains;
-        lastSimState = simMode;
+        dspEngine.updateProfile(targets.leftGainsDb, targets.rightGainsDb);
+        lastLeftGains = targets.leftGainsDb;
+        lastRightGains = targets.rightGainsDb;
+        lastAuditionMode = auditionModeIdx;
+        lastFormula = formulaIdx;
+        lastMasterGain = masterGain;
+        lastBassTrim = bassTrim;
+        lastTrebleTrim = trebleTrim;
     }
 
-    // 4. Process audio through DSP engine
+    // 5. Run audio DSP pipeline
     dspEngine.process(buffer);
 }
 
@@ -116,7 +169,7 @@ juce::AudioProcessorEditor* HearingAssistProcessor::createEditor()
     return new AudiogramView(*this);
 }
 
-// JUCE AudioProcessor creation factory
+// Plugin filter factory
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new HearingAssistProcessor();

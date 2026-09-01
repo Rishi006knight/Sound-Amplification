@@ -28,15 +28,33 @@ juce_add_plugin(HearingAssist
     FORMATS Standalone VST3
 )
 
-# All project source and header files
+# Unified Production Source Files
 target_sources(HearingAssist
     PRIVATE
+        # Application Entry
         HearingAssist/App/Main.cpp
-        HearingAssist/DSP/HearingAssistProcessor.h
-        HearingAssist/DSP/HearingAssistProcessor.cpp
+
+        # Audiometry
+        HearingAssist/Audiometry/ThresholdData.h
+        HearingAssist/Audiometry/ThresholdData.cpp
+
+        # Prescription & Fitting
+        HearingAssist/HearingProfile/FittingAlgorithms.h
+        HearingAssist/HearingProfile/FittingAlgorithms.cpp
+
+        # DSP Core
         HearingAssist/DSP/PersonalizedDSP.h
         HearingAssist/DSP/PersonalizedDSP.cpp
-        HearingAssist/HearingProfile/GainCalculator.h
+        HearingAssist/DSP/HearingAssistProcessor.h
+        HearingAssist/DSP/HearingAssistProcessor.cpp
+
+        # Storage & Persistence
+        HearingAssist/Storage/ProfileStore.h
+        HearingAssist/Storage/ProfileStore.cpp
+
+        # UI & Visualization
+        HearingAssist/UI/AudiogramComponent.h
+        HearingAssist/UI/AudiogramComponent.cpp
         HearingAssist/UI/AudiogramView.h
         HearingAssist/UI/AudiogramView.cpp
 )

@@ -3,7 +3,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
 #include "PersonalizedDSP.h"
-#include "HearingProfile/GainCalculator.h"
+#include "Audiometry/ThresholdData.h"
+#include "HearingProfile/FittingAlgorithms.h"
 
 class HearingAssistProcessor : public juce::AudioProcessor
 {
@@ -30,16 +31,24 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-    // Public so the UI component can attach and observe parameters
+    // Direct access to APVTS and DSP
     juce::AudioProcessorValueTreeState apvts;
+    HearingAssist::PersonalizedDSP& getDSP() { return dspEngine; }
+
+    void loadPreset(const HearingAssist::ThresholdData& preset);
 
 private:
-    PersonalizedDSP dspEngine;
+    HearingAssist::PersonalizedDSP dspEngine;
+    HearingAssist::ThresholdData currentAudiogram;
 
-    // Store previous gains to avoid recalculating filter coefficients if sliders haven't moved
+    // Cache of active parameters
     std::array<float, 6> lastLeftGains { -999.0f, -999.0f, -999.0f, -999.0f, -999.0f, -999.0f };
     std::array<float, 6> lastRightGains { -999.0f, -999.0f, -999.0f, -999.0f, -999.0f, -999.0f };
-    bool lastSimState { false };
+    int lastAuditionMode{-1};
+    int lastFormula{-1};
+    float lastMasterGain{-999.0f};
+    float lastBassTrim{-999.0f};
+    float lastTrebleTrim{-999.0f};
 
     juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
 
