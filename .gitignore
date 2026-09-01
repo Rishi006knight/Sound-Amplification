@@ -3,6 +3,13 @@ build/
 bin/
 out/
 .cache/
+HearingAssist_artefacts/
+
+# Node / Next.js Web files
+node_modules/
+.next/
+out/
+.vercel/
 
 # Visual Studio / MSVC files
 .vs/
